@@ -48,11 +48,17 @@ export default function App() {
     return { total: at.length, done: at.filter(t => t.status === "done").length }
   }
 
-  const filteredTasks = areaTasks.filter(t => {
-    const sOk = filterStatus   === "all" || t.status   === filterStatus
-    const pOk = filterPriority === "all" || t.priority === filterPriority
-    return sOk && pOk
-  })
+  const priorityRank = { high: 0, medium: 1, low: 2 }
+  const filteredTasks = areaTasks
+    .filter(t => {
+      const sOk = filterStatus   === "all" || t.status   === filterStatus
+      const pOk = filterPriority === "all" || t.priority === filterPriority
+      return sOk && pOk
+    })
+    .sort((a, b) =>
+      (priorityRank[a.priority] - priorityRank[b.priority]) ||
+      (a.sort_order - b.sort_order)
+    )
 
   // ─── Update a single field ──────────────────────────────────────────────────
   const updateField = async (taskId, field, value) => {
@@ -78,8 +84,9 @@ export default function App() {
     const prefixes = { sleep:"S", food:"A", startup:"ST", sport:"D", content:"C", finance:"F" }
     const prefix   = prefixes[activeArea]
     const existing = tasks.filter(t => t.area === activeArea)
+    const maxOrder = existing.reduce((m, t) => Math.max(m, t.sort_order || 0), 0)
     const newId    = `${prefix}${existing.length + 1}_${Date.now()}`
-    const toInsert = { ...newTask, id: newId, area: activeArea, status:"pending", sort_order: existing.length + 1 }
+    const toInsert = { ...newTask, id: newId, area: activeArea, status:"pending", sort_order: maxOrder + 1 }
     const { data } = await supabase.from("tasks").insert(toInsert).select()
     if (data) setTasks(prev => [...prev, data[0]])
     setNewTask({ task:"", priority:"high", time_estimate:"", next_step:"" })
