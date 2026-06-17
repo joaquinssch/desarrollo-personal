@@ -13,6 +13,7 @@ export default function App() {
   const [showAddModal, setShowAddModal]     = useState(false)
   const [newTask, setNewTask] = useState({ task:"", priority:"high", time_estimate:"", next_step:"" })
   const [saving, setSaving] = useState(false)
+  const [draggedId, setDraggedId] = useState(null)
 
   // ─── Load tasks from Supabase ───────────────────────────────────────────────
   const fetchTasks = useCallback(async () => {
@@ -48,7 +49,6 @@ export default function App() {
     return { total: at.length, done: at.filter(t => t.status === "done").length }
   }
 
-  const priorityRank = { high: 0, medium: 1, low: 2 }
   const filteredTasks = areaTasks
     .filter(t => {
       const sOk = filterStatus   === "all" || t.status   === filterStatus
@@ -104,6 +104,44 @@ export default function App() {
     await supabase.from("tasks").delete().eq("id", taskId)
   }
 
+  // ─── Reorder by drag (only within same priority + same section) ───────────────
+  const reorderTask = async (draggedTaskId, targetTaskId) => {
+    if (draggedTaskId === targetTaskId) return
+    const dragged = tasks.find(t => t.id === draggedTaskId)
+    const target  = tasks.find(t => t.id === targetTaskId)
+    if (!dragged || !target) return
+    // Solo dentro del mismo grupo de prioridad y misma sección (activas/completadas)
+    if (dragged.priority !== target.priority) return
+    if ((dragged.status === "done") !== (target.status === "done")) return
+
+    // Orden actual del área tal como se muestra
+    const areaSorted = tasks
+      .filter(t => t.area === activeArea)
+      .sort((a, b) =>
+        (priorityRank[a.priority] - priorityRank[b.priority]) ||
+        (a.sort_order - b.sort_order)
+      )
+
+    const without   = areaSorted.filter(t => t.id !== draggedTaskId)
+    const targetIdx = without.findIndex(t => t.id === targetTaskId)
+    without.splice(targetIdx, 0, dragged) // insertar la arrastrada justo antes de la objetivo
+
+    // Reasignar sort_order secuencial; los grupos de prioridad se mantienen porque el orden ya viene agrupado
+    const updates = []
+    without.forEach((t, i) => {
+      if (t.sort_order !== i + 1) updates.push({ id: t.id, sort_order: i + 1 })
+    })
+    if (updates.length === 0) return
+
+    setTasks(prev => prev.map(t => {
+      const u = updates.find(x => x.id === t.id)
+      return u ? { ...t, sort_order: u.sort_order } : t
+    }))
+    await Promise.all(updates.map(u =>
+      supabase.from("tasks").update({ sort_order: u.sort_order }).eq("id", u.id)
+    ))
+  }
+
   // ─── Render a single task row (reused by active + done sections) ──────────────
   const renderRow = (task, idx, list) => {
     const statusObj   = STATUS_OPTIONS.find(s=>s.value===task.status)
@@ -130,13 +168,25 @@ export default function App() {
       </div>
     )
 
+    const isDragging = draggedId === task.id
     return (
       <div key={task.id}
-        style={{ ...gridRow, padding:"11px 16px", borderBottom: idx<list.length-1?"1px solid #1f1f35":"none", alignItems:"center", gap:8, opacity:isDone?0.55:1, transition:"background 0.1s" }}
-        onMouseEnter={e=>e.currentTarget.style.background="#20203a"}
-        onMouseLeave={e=>e.currentTarget.style.background="transparent"}
+        style={{ ...gridRow, padding:"11px 16px", borderBottom: idx<list.length-1?"1px solid #1f1f35":"none", alignItems:"center", gap:8, opacity:isDragging?0.4:(isDone?0.55:1), transition:"background 0.1s" }}
+        onMouseEnter={e=>{ if(!draggedId) e.currentTarget.style.background="#20203a" }}
+        onMouseLeave={e=>{ if(!draggedId) e.currentTarget.style.background="transparent" }}
+        onDragOver={e=>{ if(draggedId) e.preventDefault() }}
+        onDrop={e=>{ e.preventDefault(); if(draggedId) reorderTask(draggedId, task.id); setDraggedId(null) }}
       >
-        <div style={{ fontSize:11, color:"#5a5a7a", fontWeight:600 }}>{task.id.split("_")[0]}</div>
+        <div
+          draggable
+          onDragStart={()=>setDraggedId(task.id)}
+          onDragEnd={()=>setDraggedId(null)}
+          title="Arrastrar para reordenar (dentro de su prioridad)"
+          style={{ fontSize:11, color:"#5a5a7a", fontWeight:600, display:"flex", alignItems:"center", gap:5, cursor:"grab", userSelect:"none" }}
+        >
+          <span style={{ fontSize:13, color:"#3f3f5a", lineHeight:1 }}>⠿</span>
+          {task.id.split("_")[0]}
+        </div>
 
         <div style={{ fontSize:13, color:isDone?"#5a5a7a":"#e8e8f0", textDecoration:isDone?"line-through":"none", lineHeight:1.4 }}>
           {task.task}
@@ -331,6 +381,7 @@ export default function App() {
 }
 
 // ─── Shared styles ────────────────────────────────────────────────────────────
+const priorityRank = { high: 0, medium: 1, low: 2 }
 const gridRow   = { display:"grid", gridTemplateColumns:"44px 1fr 110px 100px 150px 1fr 72px" }
 const selectStyle = { padding:"6px 10px", borderRadius:6, border:"1px solid #2a2a3e", background:"#0f0f13", color:"#e8e8f0", fontSize:12, cursor:"pointer" }
 const inputStyle  = { padding:"6px 10px", borderRadius:6, border:"1px solid #2a2a3e", background:"#0f0f13", color:"#e8e8f0", fontSize:13 }
