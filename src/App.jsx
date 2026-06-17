@@ -60,6 +60,9 @@ export default function App() {
       (a.sort_order - b.sort_order)
     )
 
+  const activeTasks = filteredTasks.filter(t => t.status !== "done")
+  const doneTasks   = filteredTasks.filter(t => t.status === "done")
+
   // ─── Update a single field ──────────────────────────────────────────────────
   const updateField = async (taskId, field, value) => {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, [field]: value } : t))
@@ -99,6 +102,77 @@ export default function App() {
     if (!confirm("¿Eliminar esta tarea?")) return
     setTasks(prev => prev.filter(t => t.id !== taskId))
     await supabase.from("tasks").delete().eq("id", taskId)
+  }
+
+  // ─── Render a single task row (reused by active + done sections) ──────────────
+  const renderRow = (task, idx, list) => {
+    const statusObj   = STATUS_OPTIONS.find(s=>s.value===task.status)
+    const priorityObj = PRIORITY_OPTIONS.find(p=>p.value===task.priority)
+    const isDone      = task.status==="done"
+    const isEditing   = editingTask?.id === task.id
+
+    if (isEditing) return (
+      <div key={task.id} style={{ ...gridRow, padding:"10px 16px", borderBottom:"1px solid #2a2a3e", background:"#20203a", alignItems:"center", gap:8 }}>
+        <div style={{ fontSize:11, color:"#5a5a7a", fontWeight:600 }}>{task.id.split("_")[0]}</div>
+        <input value={editingTask.task} onChange={e=>setEditingTask(p=>({...p,task:e.target.value}))} style={inputStyle} />
+        <select value={editingTask.priority} onChange={e=>setEditingTask(p=>({...p,priority:e.target.value}))} style={selectStyle}>
+          {PRIORITY_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}
+        </select>
+        <input value={editingTask.time_estimate} onChange={e=>setEditingTask(p=>({...p,time_estimate:e.target.value}))} style={inputStyle} />
+        <select value={editingTask.status} onChange={e=>setEditingTask(p=>({...p,status:e.target.value}))} style={selectStyle}>
+          {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
+        </select>
+        <input value={editingTask.next_step} onChange={e=>setEditingTask(p=>({...p,next_step:e.target.value}))} style={inputStyle} />
+        <div style={{ display:"flex", gap:4 }}>
+          <button onClick={saveEdit} disabled={saving} style={{ padding:"4px 9px", borderRadius:5, border:"none", background:"#10b981", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:700 }}>✓</button>
+          <button onClick={()=>setEditingTask(null)} style={{ padding:"4px 9px", borderRadius:5, border:"none", background:"#374151", color:"#fff", cursor:"pointer", fontSize:13 }}>✕</button>
+        </div>
+      </div>
+    )
+
+    return (
+      <div key={task.id}
+        style={{ ...gridRow, padding:"11px 16px", borderBottom: idx<list.length-1?"1px solid #1f1f35":"none", alignItems:"center", gap:8, opacity:isDone?0.55:1, transition:"background 0.1s" }}
+        onMouseEnter={e=>e.currentTarget.style.background="#20203a"}
+        onMouseLeave={e=>e.currentTarget.style.background="transparent"}
+      >
+        <div style={{ fontSize:11, color:"#5a5a7a", fontWeight:600 }}>{task.id.split("_")[0]}</div>
+
+        <div style={{ fontSize:13, color:isDone?"#5a5a7a":"#e8e8f0", textDecoration:isDone?"line-through":"none", lineHeight:1.4 }}>
+          {task.task}
+        </div>
+
+        <div>
+          <span style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:`${priorityObj?.color}20`, color:priorityObj?.color, fontWeight:600 }}>
+            {priorityObj?.label}
+          </span>
+        </div>
+
+        <div style={{ fontSize:12, color:"#7c7c9a" }}>{task.time_estimate}</div>
+
+        <select value={task.status} onChange={e=>updateField(task.id,"status",e.target.value)} style={{
+          padding:"4px 8px", borderRadius:6, border:`1px solid ${statusObj?.color}40`,
+          background:`${statusObj?.color}15`, color:statusObj?.color, fontSize:12, cursor:"pointer", fontWeight:500, width:"100%",
+        }}>
+          {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
+        </select>
+
+        <div
+          contentEditable suppressContentEditableWarning
+          onBlur={e=>updateField(task.id,"next_step",e.currentTarget.textContent.trim())}
+          style={{ fontSize:12, color:"#9999b5", outline:"none", padding:"3px 6px", borderRadius:5, border:"1px solid transparent", cursor:"text", minHeight:20, lineHeight:1.4 }}
+          onFocus={e=>e.currentTarget.style.borderColor="#2a2a4e"}
+          onBlurCapture={e=>e.currentTarget.style.borderColor="transparent"}
+        >
+          {task.next_step}
+        </div>
+
+        <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
+          <button onClick={()=>setEditingTask({...task})} title="Editar" style={iconBtn}>✏️</button>
+          <button onClick={()=>deleteTask(task.id)} title="Eliminar" style={iconBtn}>🗑️</button>
+        </div>
+      </div>
+    )
   }
 
   // ─── Render ─────────────────────────────────────────────────────────────────
@@ -185,80 +259,25 @@ export default function App() {
             <div>#</div><div>Tarea</div><div>Prioridad</div><div>Tiempo</div><div>Estado</div><div>Next Step</div><div></div>
           </div>
 
-          {filteredTasks.length === 0 && (
-            <div style={{ padding:40, textAlign:"center", color:"#5a5a7a", fontSize:14 }}>No hay tareas con estos filtros</div>
+          {activeTasks.length === 0 && (
+            <div style={{ padding:40, textAlign:"center", color:"#5a5a7a", fontSize:14 }}>No hay tareas pendientes con estos filtros</div>
           )}
 
-          {filteredTasks.map((task, idx) => {
-            const statusObj   = STATUS_OPTIONS.find(s=>s.value===task.status)
-            const priorityObj = PRIORITY_OPTIONS.find(p=>p.value===task.priority)
-            const isDone      = task.status==="done"
-            const isEditing   = editingTask?.id === task.id
-
-            if (isEditing) return (
-              <div key={task.id} style={{ ...gridRow, padding:"10px 16px", borderBottom:"1px solid #2a2a3e", background:"#20203a", alignItems:"center", gap:8 }}>
-                <div style={{ fontSize:11, color:"#5a5a7a", fontWeight:600 }}>{task.id.split("_")[0]}</div>
-                <input value={editingTask.task} onChange={e=>setEditingTask(p=>({...p,task:e.target.value}))} style={inputStyle} />
-                <select value={editingTask.priority} onChange={e=>setEditingTask(p=>({...p,priority:e.target.value}))} style={selectStyle}>
-                  {PRIORITY_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}
-                </select>
-                <input value={editingTask.time_estimate} onChange={e=>setEditingTask(p=>({...p,time_estimate:e.target.value}))} style={inputStyle} />
-                <select value={editingTask.status} onChange={e=>setEditingTask(p=>({...p,status:e.target.value}))} style={selectStyle}>
-                  {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
-                </select>
-                <input value={editingTask.next_step} onChange={e=>setEditingTask(p=>({...p,next_step:e.target.value}))} style={inputStyle} />
-                <div style={{ display:"flex", gap:4 }}>
-                  <button onClick={saveEdit} disabled={saving} style={{ padding:"4px 9px", borderRadius:5, border:"none", background:"#10b981", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:700 }}>✓</button>
-                  <button onClick={()=>setEditingTask(null)} style={{ padding:"4px 9px", borderRadius:5, border:"none", background:"#374151", color:"#fff", cursor:"pointer", fontSize:13 }}>✕</button>
-                </div>
-              </div>
-            )
-
-            return (
-              <div key={task.id}
-                style={{ ...gridRow, padding:"11px 16px", borderBottom: idx<filteredTasks.length-1?"1px solid #1f1f35":"none", alignItems:"center", gap:8, opacity:isDone?0.45:1, transition:"background 0.1s" }}
-                onMouseEnter={e=>e.currentTarget.style.background="#20203a"}
-                onMouseLeave={e=>e.currentTarget.style.background="transparent"}
-              >
-                <div style={{ fontSize:11, color:"#5a5a7a", fontWeight:600 }}>{task.id.split("_")[0]}</div>
-
-                <div style={{ fontSize:13, color:isDone?"#5a5a7a":"#e8e8f0", textDecoration:isDone?"line-through":"none", lineHeight:1.4 }}>
-                  {task.task}
-                </div>
-
-                <div>
-                  <span style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:`${priorityObj?.color}20`, color:priorityObj?.color, fontWeight:600 }}>
-                    {priorityObj?.label}
-                  </span>
-                </div>
-
-                <div style={{ fontSize:12, color:"#7c7c9a" }}>{task.time_estimate}</div>
-
-                <select value={task.status} onChange={e=>updateField(task.id,"status",e.target.value)} style={{
-                  padding:"4px 8px", borderRadius:6, border:`1px solid ${statusObj?.color}40`,
-                  background:`${statusObj?.color}15`, color:statusObj?.color, fontSize:12, cursor:"pointer", fontWeight:500, width:"100%",
-                }}>
-                  {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
-                </select>
-
-                <div
-                  contentEditable suppressContentEditableWarning
-                  onBlur={e=>updateField(task.id,"next_step",e.currentTarget.textContent.trim())}
-                  style={{ fontSize:12, color:"#9999b5", outline:"none", padding:"3px 6px", borderRadius:5, border:"1px solid transparent", cursor:"text", minHeight:20, lineHeight:1.4 }}
-                  onFocus={e=>e.currentTarget.style.borderColor="#2a2a4e"}
-                  onBlurCapture={e=>e.currentTarget.style.borderColor="transparent"}
-                >
-                  {task.next_step}
-                </div>
-
-                <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
-                  <button onClick={()=>setEditingTask({...task})} title="Editar" style={iconBtn}>✏️</button>
-                  <button onClick={()=>deleteTask(task.id)} title="Eliminar" style={iconBtn}>🗑️</button>
-                </div>
-              </div>
-            )
-          })}
+          {activeTasks.map((task, idx) => renderRow(task, idx, activeTasks))}
         </div>
+
+        {/* ── Done section ── */}
+        {doneTasks.length > 0 && (
+          <div style={{ marginTop:24 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+              <span style={{ fontSize:13, fontWeight:600, color:"#10b981" }}>✅ Completadas</span>
+              <span style={{ fontSize:11, color:"#5a5a7a", background:"#10b98120", borderRadius:20, padding:"1px 8px", fontWeight:600 }}>{doneTasks.length}</span>
+            </div>
+            <div style={{ background:"#15151f", borderRadius:12, border:"1px solid #1f3a2e", overflow:"hidden" }}>
+              {doneTasks.map((task, idx) => renderRow(task, idx, doneTasks))}
+            </div>
+          </div>
+        )}
 
         {/* ── Area progress ── */}
         {(() => {
