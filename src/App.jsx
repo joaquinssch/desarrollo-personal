@@ -360,7 +360,7 @@ function Board({ session }) {
       <div style={{ background:"linear-gradient(135deg,#1a1a2e 0%,#16213e 100%)", borderBottom:"1px solid #2a2a3e", padding: isMobile?"14px 16px":"18px 24px", position:"sticky", top:0, zIndex:50 }}>
         <div style={{ maxWidth:1100, margin:"0 auto", display:"flex", alignItems:"center", justifyContent:"space-between", flexWrap:"wrap", gap:12 }}>
           <div>
-            <h1 style={{ margin:0, fontSize:isMobile?17:20, fontWeight:700, color:"#fff", letterSpacing:"-0.5px" }}>🗺️ Desarrollo Personal</h1>
+            <h1 style={{ margin:0, fontSize:isMobile?17:20, fontWeight:700, color:"#fff", letterSpacing:"-0.5px" }}>✅ To Do List</h1>
             <p style={{ margin:"3px 0 0", fontSize:12, color:"#7c7c9a" }}>{new Date().toLocaleDateString("es-CL",{ weekday:"long", day:"numeric", month:"long" })}</p>
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:14 }}>
@@ -575,8 +575,8 @@ function Auth() {
     <div style={{ fontFamily:"'Inter', system-ui, sans-serif", minHeight:"100vh", background:"#0f0f13", color:"#e8e8f0", display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
       <form onSubmit={submit} style={{ width:360, maxWidth:"100%", background:"#1a1a2e", border:"1px solid #2a2a3e", borderRadius:16, padding:28, boxShadow:"0 20px 60px #000000aa" }}>
         <div style={{ textAlign:"center", marginBottom:22 }}>
-          <div style={{ fontSize:34 }}>🗺️</div>
-          <h1 style={{ margin:"6px 0 2px", fontSize:20, color:"#fff" }}>Desarrollo Personal</h1>
+          <div style={{ fontSize:34 }}>✅</div>
+          <h1 style={{ margin:"6px 0 2px", fontSize:20, color:"#fff" }}>To Do List</h1>
           <p style={{ margin:0, fontSize:13, color:"#7c7c9a" }}>{mode==="login" ? "Inicia sesión para ver tus tareas" : "Crea tu cuenta"}</p>
         </div>
         <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
