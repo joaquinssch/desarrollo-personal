@@ -6,18 +6,20 @@ export default function App() {
   const [tasks, setTasks]           = useState([])
   const [loading, setLoading]       = useState(true)
   const [seeded, setSeeded]         = useState(false)
+  const [view, setView]             = useState("area") // area | today
   const [activeArea, setActiveArea] = useState("sleep")
   const [filterStatus, setFilterStatus]     = useState("all")
   const [filterPriority, setFilterPriority] = useState("all")
   const [editingTask, setEditingTask]       = useState(null)
   const [showAddModal, setShowAddModal]     = useState(false)
-  const [newTask, setNewTask] = useState({ task:"", priority:"high", time_estimate:"", worth:"", next_step:"" })
+  const [newTask, setNewTask] = useState({ task:"", priority:"high", time_estimate:"", worth:"", due_date:"", focus_today:false, next_step:"" })
   const [saving, setSaving] = useState(false)
   const [draggedId, setDraggedId] = useState(null)
-  const [sortMode, setSortMode] = useState("manual") // manual | time_asc | time_desc | worth_asc | worth_desc
+  const [sortMode, setSortMode] = useState("manual") // manual | time_* | worth_* | due_*
 
   const isMobile    = useIsMobile()
   const manualMode  = sortMode === "manual"
+  const today       = todayISO()
 
   // ─── Load tasks from Supabase ───────────────────────────────────────────────
   const fetchTasks = useCallback(async () => {
@@ -47,10 +49,19 @@ export default function App() {
   const currentArea  = AREAS.find(a => a.id === activeArea)
   const totalAll     = tasks.length
   const doneAll      = tasks.filter(t => t.status === "done").length
+  const todayCount   = tasks.filter(t => t.focus_date === today && t.status !== "done").length
+  const isToday      = (t) => t.focus_date === today
 
   const getAreaStats = (areaId) => {
     const at = tasks.filter(t => t.area === areaId)
     return { total: at.length, done: at.filter(t => t.status === "done").length }
+  }
+
+  const dueInfo = (t) => {
+    if (!t.due_date) return null
+    if (t.due_date < today) return { text:"Atrasada", color:"#ef4444" }
+    if (t.due_date === today) return { text:"Vence hoy", color:"#f97316" }
+    return { text: fmtDate(t.due_date), color:"#9999b5" }
   }
 
   const compareTasks = (a, b) => {
@@ -58,16 +69,26 @@ export default function App() {
     if (pr !== 0) return pr
     if (sortMode !== "manual") {
       const [col, dir] = sortMode.split("_")
-      const get = col === "time" ? parseMinutes : parseWorth
-      const av = get(a), bv = get(b)
-      if (av == null && bv != null) return 1    // sin valor va al final
+      let av, bv
+      if (col === "time")  { av = parseMinutes(a); bv = parseMinutes(b) }
+      else if (col === "worth") { av = parseWorth(a); bv = parseWorth(b) }
+      else if (col === "due")   { av = a.due_date || null; bv = b.due_date || null }
+      if (av == null && bv != null) return 1   // sin valor → al final del grupo
       if (av != null && bv == null) return -1
-      if (av != null && bv != null && av !== bv) return dir === "asc" ? av - bv : bv - av
+      if (av != null && bv != null && av !== bv) {
+        const cmp = typeof av === "string" ? (av < bv ? -1 : 1) : (av - bv)
+        return dir === "asc" ? cmp : -cmp
+      }
     }
     return a.sort_order - b.sort_order
   }
 
-  const filteredTasks = areaTasks
+  // Lista según la vista activa
+  const baseTasks = view === "today"
+    ? tasks.filter(t => t.focus_date === today)
+    : areaTasks
+
+  const filteredTasks = baseTasks
     .filter(t => {
       const sOk = filterStatus   === "all" || t.status   === filterStatus
       const pOk = filterPriority === "all" || t.priority === filterPriority
@@ -77,12 +98,15 @@ export default function App() {
 
   const activeTasks = filteredTasks.filter(t => t.status !== "done")
   const doneTasks   = filteredTasks.filter(t => t.status === "done")
+  const reorderable = view === "area" // reordenar manual solo en vista por área
 
   // ─── Update a single field ──────────────────────────────────────────────────
   const updateField = async (taskId, field, value) => {
     setTasks(prev => prev.map(t => t.id === taskId ? { ...t, [field]: value } : t))
     await supabase.from("tasks").update({ [field]: value }).eq("id", taskId)
   }
+
+  const toggleToday = (task) => updateField(task.id, "focus_date", isToday(task) ? null : today)
 
   // ─── Save full edit ─────────────────────────────────────────────────────────
   const saveEdit = async () => {
@@ -93,9 +117,10 @@ export default function App() {
       ? null : String(parseInt(editingTask.time_estimate, 10))
     const worth = editingTask.worth === "" || editingTask.worth == null
       ? null : parseInt(editingTask.worth, 10)
-    const updated = { ...editingTask, time_estimate, worth }
+    const due_date = editingTask.due_date === "" || editingTask.due_date == null ? null : editingTask.due_date
+    const updated = { ...editingTask, time_estimate, worth, due_date }
     setTasks(prev => prev.map(t => t.id === id ? updated : t))
-    await supabase.from("tasks").update({ task, priority, time_estimate, worth, status, next_step }).eq("id", id)
+    await supabase.from("tasks").update({ task, priority, time_estimate, worth, due_date, status, next_step }).eq("id", id)
     setEditingTask(null)
     setSaving(false)
   }
@@ -111,11 +136,17 @@ export default function App() {
     const newId    = `${prefix}${existing.length + 1}_${Date.now()}`
     const time_estimate = newTask.time_estimate === "" ? null : String(parseInt(newTask.time_estimate, 10))
     const worth         = newTask.worth === "" ? null : parseInt(newTask.worth, 10)
-    const toInsert = { ...newTask, time_estimate, worth, id: newId, area: activeArea, status:"pending", sort_order: maxOrder + 1 }
+    const toInsert = {
+      task: newTask.task, priority: newTask.priority, next_step: newTask.next_step,
+      time_estimate, worth,
+      due_date: newTask.due_date || null,
+      focus_date: newTask.focus_today ? today : null,
+      id: newId, area: activeArea, status:"pending", sort_order: maxOrder + 1,
+    }
     const { data, error } = await supabase.from("tasks").insert(toInsert).select()
-    if (error) { console.error(error); alert("No se pudo guardar. ¿Creaste la columna 'worth' en Supabase?"); setSaving(false); return }
+    if (error) { console.error(error); alert("No se pudo guardar. ¿Creaste las columnas en Supabase?"); setSaving(false); return }
     if (data) setTasks(prev => [...prev, data[0]])
-    setNewTask({ task:"", priority:"high", time_estimate:"", worth:"", next_step:"" })
+    setNewTask({ task:"", priority:"high", time_estimate:"", worth:"", due_date:"", focus_today:false, next_step:"" })
     setShowAddModal(false)
     setSaving(false)
   }
@@ -129,7 +160,7 @@ export default function App() {
 
   // ─── Reorder by drag (desktop, only within same priority + section) ───────────
   const reorderTask = async (draggedTaskId, targetTaskId) => {
-    if (!manualMode || draggedTaskId === targetTaskId) return
+    if (!manualMode || !reorderable || draggedTaskId === targetTaskId) return
     const dragged = tasks.find(t => t.id === draggedTaskId)
     const target  = tasks.find(t => t.id === targetTaskId)
     if (!dragged || !target) return
@@ -157,7 +188,7 @@ export default function App() {
 
   // ─── Move up/down (works on touch + desktop) ──────────────────────────────────
   const moveTask = async (taskId, dir) => {
-    if (!manualMode) return
+    if (!manualMode || !reorderable) return
     const me = tasks.find(t => t.id === taskId)
     if (!me) return
     const siblings = filteredTasks.filter(t =>
@@ -182,7 +213,15 @@ export default function App() {
     ...task,
     time_estimate: parseMinutes(task) ?? "",
     worth: parseWorth(task) ?? "",
+    due_date: task.due_date ?? "",
   })
+
+  const starBtn = (task) => (
+    <button onClick={()=>toggleToday(task)} title={isToday(task)?"Quitar de Hoy":"Marcar para hoy"}
+      style={{ ...iconBtn, background:isToday(task)?"#f59e0b25":"#2a2a3e", color:isToday(task)?"#f59e0b":"#9999b5" }}>
+      {isToday(task) ? "⭐" : "☆"}
+    </button>
+  )
 
   // ─── Render a single task row (desktop grid + mobile card) ────────────────────
   const renderRow = (task, idx, list) => {
@@ -192,29 +231,22 @@ export default function App() {
     const isEditing   = editingTask?.id === task.id
     const mins        = parseMinutes(task)
     const w           = parseWorth(task)
+    const di          = dueInfo(task)
     const isDragging  = draggedId === task.id
-
     const isFirst = idx === 0
     const isLast  = idx === list.length - 1
 
     // ── EDIT MODE ──
     if (isEditing) {
-      const timeInput = (
-        <input type="number" min={0} max={120} step={5} value={editingTask.time_estimate}
-          onChange={e=>setEditingTask(p=>({...p, time_estimate: clampMin(e.target.value)}))}
-          placeholder="min" style={inputStyle} />
-      )
-      const worthInput = (
-        <input type="number" min={0} step={1} value={editingTask.worth}
-          onChange={e=>setEditingTask(p=>({...p, worth: clampWorth(e.target.value)}))}
-          placeholder="USD" style={inputStyle} />
-      )
       const taskInput = <input value={editingTask.task} onChange={e=>setEditingTask(p=>({...p,task:e.target.value}))} style={inputStyle} />
       const prioInput = (
         <select value={editingTask.priority} onChange={e=>setEditingTask(p=>({...p,priority:e.target.value}))} style={selectStyle}>
           {PRIORITY_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}
         </select>
       )
+      const timeInput = <input type="number" min={0} max={120} step={5} value={editingTask.time_estimate} onChange={e=>setEditingTask(p=>({...p, time_estimate: clampMin(e.target.value)}))} placeholder="min" style={inputStyle} />
+      const worthInput = <input type="number" min={0} step={1} value={editingTask.worth} onChange={e=>setEditingTask(p=>({...p, worth: clampWorth(e.target.value)}))} placeholder="USD" style={inputStyle} />
+      const dueInput = <input type="date" value={editingTask.due_date||""} onChange={e=>setEditingTask(p=>({...p, due_date:e.target.value}))} style={{...inputStyle, colorScheme:"dark"}} />
       const statusInput = (
         <select value={editingTask.status} onChange={e=>setEditingTask(p=>({...p,status:e.target.value}))} style={selectStyle}>
           {STATUS_OPTIONS.map(s=><option key={s.value} value={s.value}>{s.label}</option>)}
@@ -223,8 +255,8 @@ export default function App() {
       const nextInput = <input value={editingTask.next_step||""} onChange={e=>setEditingTask(p=>({...p,next_step:e.target.value}))} style={inputStyle} />
       const saveBtns = (
         <div style={{ display:"flex", gap:4 }}>
-          <button onClick={saveEdit} disabled={saving} style={{ padding:"6px 11px", borderRadius:5, border:"none", background:"#10b981", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:700 }}>✓ Guardar</button>
-          <button onClick={()=>setEditingTask(null)} style={{ padding:"6px 11px", borderRadius:5, border:"none", background:"#374151", color:"#fff", cursor:"pointer", fontSize:13 }}>✕</button>
+          <button onClick={saveEdit} disabled={saving} style={{ padding:"6px 9px", borderRadius:5, border:"none", background:"#10b981", color:"#fff", cursor:"pointer", fontSize:13, fontWeight:700 }}>✓</button>
+          <button onClick={()=>setEditingTask(null)} style={{ padding:"6px 9px", borderRadius:5, border:"none", background:"#374151", color:"#fff", cursor:"pointer", fontSize:13 }}>✕</button>
         </div>
       )
 
@@ -239,6 +271,7 @@ export default function App() {
             <FieldM label="Tiempo (min)">{timeInput}</FieldM>
             <FieldM label="Worth (USD)">{worthInput}</FieldM>
           </div>
+          <FieldM label="Fecha límite">{dueInput}</FieldM>
           <FieldM label="Next step">{nextInput}</FieldM>
           {saveBtns}
         </div>
@@ -247,31 +280,34 @@ export default function App() {
       return (
         <div key={task.id} style={{ ...gridRow, padding:"10px 16px", borderBottom:"1px solid #2a2a3e", background:"#20203a", alignItems:"center", gap:8 }}>
           <div style={{ fontSize:11, color:"#5a5a7a", fontWeight:600 }}>{task.id.split("_")[0]}</div>
-          {taskInput}{prioInput}{timeInput}{worthInput}{statusInput}{nextInput}{saveBtns}
+          {taskInput}{prioInput}{timeInput}{worthInput}{dueInput}{statusInput}{nextInput}{saveBtns}
         </div>
       )
     }
 
-    // ── REORDER CONTROLS (▲▼) — only in manual mode ──
-    const arrows = manualMode && (
+    const arrows = manualMode && reorderable && (
       <div style={{ display:"flex", flexDirection:"column", gap:1 }}>
-        <button onClick={()=>moveTask(task.id,"up")} disabled={isFirst} title="Subir"
-          style={{ ...arrowBtn, opacity:isFirst?0.25:1, cursor:isFirst?"default":"pointer" }}>▲</button>
-        <button onClick={()=>moveTask(task.id,"down")} disabled={isLast} title="Bajar"
-          style={{ ...arrowBtn, opacity:isLast?0.25:1, cursor:isLast?"default":"pointer" }}>▼</button>
+        <button onClick={()=>moveTask(task.id,"up")} disabled={isFirst} title="Subir" style={{ ...arrowBtn, opacity:isFirst?0.25:1, cursor:isFirst?"default":"pointer" }}>▲</button>
+        <button onClick={()=>moveTask(task.id,"down")} disabled={isLast} title="Bajar" style={{ ...arrowBtn, opacity:isLast?0.25:1, cursor:isLast?"default":"pointer" }}>▼</button>
       </div>
+    )
+
+    const dueBadge = di && (
+      <span style={{ fontSize:11, padding:"2px 7px", borderRadius:5, background:`${di.color}20`, color:di.color, fontWeight:600 }}>{di.text}</span>
     )
 
     // ── MOBILE CARD ──
     if (isMobile) return (
-      <div key={task.id} style={{ ...cardStyle, opacity:isDone?0.6:1 }}>
+      <div key={task.id} style={{ ...cardStyle, opacity:isDone?0.6:1, borderColor:isToday(task)?"#f59e0b55":"#2a2a3e" }}>
         <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginBottom:8 }}>
-          <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
             <span style={{ fontSize:11, color:"#5a5a7a", fontWeight:600 }}>{task.id.split("_")[0]}</span>
             <span style={{ fontSize:11, padding:"2px 8px", borderRadius:20, background:`${priorityObj?.color}20`, color:priorityObj?.color, fontWeight:600 }}>{priorityObj?.label}</span>
+            {dueBadge}
           </div>
           <div style={{ display:"flex", alignItems:"center", gap:6 }}>
             {arrows}
+            {starBtn(task)}
             <button onClick={()=>startEdit(task)} title="Editar" style={iconBtn}>✏️</button>
             <button onClick={()=>deleteTask(task.id)} title="Eliminar" style={iconBtn}>🗑️</button>
           </div>
@@ -313,13 +349,13 @@ export default function App() {
         onDrop={e=>{ e.preventDefault(); if(draggedId) reorderTask(draggedId, task.id); setDraggedId(null) }}
       >
         <div
-          draggable={manualMode}
-          onDragStart={()=> manualMode && setDraggedId(task.id)}
+          draggable={manualMode && reorderable}
+          onDragStart={()=> manualMode && reorderable && setDraggedId(task.id)}
           onDragEnd={()=>setDraggedId(null)}
-          title={manualMode ? "Arrastrar para reordenar (dentro de su prioridad)" : "Cambia a 'Orden manual' para reordenar"}
-          style={{ fontSize:11, color:"#5a5a7a", fontWeight:600, display:"flex", alignItems:"center", gap:5, cursor:manualMode?"grab":"default", userSelect:"none" }}
+          title={manualMode && reorderable ? "Arrastrar para reordenar" : ""}
+          style={{ fontSize:11, color:"#5a5a7a", fontWeight:600, display:"flex", alignItems:"center", gap:5, cursor:(manualMode&&reorderable)?"grab":"default", userSelect:"none" }}
         >
-          {manualMode && <span style={{ fontSize:13, color:"#3f3f5a", lineHeight:1 }}>⠿</span>}
+          {manualMode && reorderable && <span style={{ fontSize:13, color:"#3f3f5a", lineHeight:1 }}>⠿</span>}
           {task.id.split("_")[0]}
         </div>
 
@@ -336,6 +372,8 @@ export default function App() {
         <div style={{ fontSize:12, color:"#7c7c9a" }}>{mins!=null ? `${mins} min` : "—"}</div>
 
         <div style={{ fontSize:12, color: w!=null ? "#84cc16" : "#7c7c9a", fontWeight: w!=null?600:400 }}>{w!=null ? fmtWorth(w) : "—"}</div>
+
+        <div>{dueBadge || <span style={{ fontSize:12, color:"#5a5a7a" }}>—</span>}</div>
 
         <select value={task.status} onChange={e=>updateField(task.id,"status",e.target.value)} style={{
           padding:"4px 8px", borderRadius:6, border:`1px solid ${statusObj?.color}40`,
@@ -355,6 +393,7 @@ export default function App() {
         </div>
 
         <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
+          {starBtn(task)}
           <button onClick={()=>startEdit(task)} title="Editar" style={iconBtn}>✏️</button>
           <button onClick={()=>deleteTask(task.id)} title="Eliminar" style={iconBtn}>🗑️</button>
         </div>
@@ -395,13 +434,26 @@ export default function App() {
 
       <div style={{ maxWidth:1100, margin:"0 auto", padding: isMobile?"16px 12px":"20px 24px" }}>
 
-        {/* ── Area tabs ── */}
+        {/* ── Tabs: Hoy + áreas ── */}
         <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+          <button onClick={()=>setView("today")} style={{
+            padding:"8px 14px", borderRadius:8, cursor:"pointer", fontSize:13, fontWeight: view==="today"?700:500,
+            border: view==="today" ? "2px solid #f59e0b" : "2px solid transparent",
+            background: view==="today" ? "#f59e0b1f" : "#1a1a2e",
+            color: view==="today" ? "#f59e0b" : "#c9a24a",
+            display:"flex", alignItems:"center", gap:8, transition:"all 0.15s",
+          }}>
+            ⭐ Hoy
+            <span style={{ background: todayCount>0?"#f59e0b30":"#ffffff15", color: todayCount>0?"#f59e0b":"#7c7c9a", borderRadius:20, padding:"1px 7px", fontSize:11, fontWeight:600 }}>{todayCount}</span>
+          </button>
+
+          <div style={{ width:1, background:"#2a2a3e", margin:"4px 2px" }} />
+
           {AREAS.map(area => {
             const stats   = getAreaStats(area.id)
-            const isActive = activeArea === area.id
+            const isActive = view==="area" && activeArea === area.id
             return (
-              <button key={area.id} onClick={() => setActiveArea(area.id)} style={{
+              <button key={area.id} onClick={() => { setView("area"); setActiveArea(area.id) }} style={{
                 padding:"8px 14px", borderRadius:8, cursor:"pointer", fontSize:13, fontWeight: isActive ? 600 : 400,
                 border: isActive ? `2px solid ${area.color}` : "2px solid transparent",
                 background: isActive ? `${area.color}18` : "#1a1a2e",
@@ -421,6 +473,18 @@ export default function App() {
           })}
         </div>
 
+        {/* ── Vista Hoy: encabezado/hint ── */}
+        {view==="today" && (
+          <div style={{ marginBottom:14, padding:"12px 16px", background:"#f59e0b12", border:"1px solid #f59e0b35", borderRadius:10 }}>
+            <div style={{ fontSize:14, fontWeight:600, color:"#f59e0b", marginBottom:2 }}>⭐ Tu foco de hoy</div>
+            <div style={{ fontSize:12, color:"#b89968" }}>
+              {todayCount===0 ? "Aún no eliges tareas para hoy. Ve a un área y marca la ⭐ en 1–3 tareas."
+                : todayCount<=3 ? `${todayCount} tarea${todayCount>1?"s":""} para hoy. ¡Enfócate en cerrarlas!`
+                : `Tienes ${todayCount} para hoy — son muchas. Lo ideal son máximo 3 para no dispersarte.`}
+            </div>
+          </div>
+        )}
+
         {/* ── Filters + Sort + Add ── */}
         <div style={{ display:"flex", gap:8, marginBottom:14, alignItems:"center", flexWrap:"wrap" }}>
           <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={selectStyle}>
@@ -433,6 +497,7 @@ export default function App() {
           </select>
           <select value={sortMode} onChange={e=>setSortMode(e.target.value)} style={selectStyle} title="El orden por prioridad (Alta→Media→Baja) siempre se mantiene">
             <option value="manual">↕ Orden manual</option>
+            <option value="due_asc">📅 Vence ↑ (más próximo)</option>
             <option value="time_asc">⏱ Tiempo ↑ (menor)</option>
             <option value="time_desc">⏱ Tiempo ↓ (mayor)</option>
             <option value="worth_asc">💲 Worth ↑ (menor)</option>
@@ -440,7 +505,7 @@ export default function App() {
           </select>
           <div style={{ flex:1 }} />
           <button onClick={()=>setShowAddModal(true)} style={{
-            padding:"7px 16px", borderRadius:7, border:"none", background:currentArea.color,
+            padding:"7px 16px", borderRadius:7, border:"none", background: view==="today" ? "#6366f1" : currentArea.color,
             color:"#fff", cursor:"pointer", fontSize:13, fontWeight:600, ...(isMobile?{flex:"1 0 100%"}:{}),
           }}>+ Agregar tarea</button>
         </div>
@@ -449,17 +514,21 @@ export default function App() {
         {isMobile ? (
           <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
             {activeTasks.length === 0 && (
-              <div style={{ padding:30, textAlign:"center", color:"#5a5a7a", fontSize:14, background:"#1a1a2e", borderRadius:12, border:"1px solid #2a2a3e" }}>No hay tareas pendientes con estos filtros</div>
+              <div style={{ padding:30, textAlign:"center", color:"#5a5a7a", fontSize:14, background:"#1a1a2e", borderRadius:12, border:"1px solid #2a2a3e" }}>
+                {view==="today" ? "No hay tareas marcadas para hoy" : "No hay tareas pendientes con estos filtros"}
+              </div>
             )}
             {activeTasks.map((task, idx) => renderRow(task, idx, activeTasks))}
           </div>
         ) : (
           <div style={{ background:"#1a1a2e", borderRadius:12, border:"1px solid #2a2a3e", overflow:"hidden" }}>
             <div style={{ ...gridRow, padding:"10px 16px", borderBottom:"1px solid #2a2a3e", fontSize:11, fontWeight:600, color:"#5a5a7a", textTransform:"uppercase", letterSpacing:"0.5px" }}>
-              <div>#</div><div>Tarea</div><div>Prioridad</div><div>Tiempo</div><div>Worth</div><div>Estado</div><div>Next Step</div><div></div>
+              <div>#</div><div>Tarea</div><div>Prioridad</div><div>Tiempo</div><div>Worth</div><div>Vence</div><div>Estado</div><div>Next Step</div><div></div>
             </div>
             {activeTasks.length === 0 && (
-              <div style={{ padding:40, textAlign:"center", color:"#5a5a7a", fontSize:14 }}>No hay tareas pendientes con estos filtros</div>
+              <div style={{ padding:40, textAlign:"center", color:"#5a5a7a", fontSize:14 }}>
+                {view==="today" ? "No hay tareas marcadas para hoy" : "No hay tareas pendientes con estos filtros"}
+              </div>
             )}
             {activeTasks.map((task, idx) => renderRow(task, idx, activeTasks))}
           </div>
@@ -484,8 +553,8 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Area progress ── */}
-        {(() => {
+        {/* ── Area progress (solo vista por área) ── */}
+        {view==="area" && (() => {
           const s   = getAreaStats(activeArea)
           const pct = s.total ? Math.round((s.done/s.total)*100) : 0
           return (
@@ -502,32 +571,37 @@ export default function App() {
       {/* ── Add modal ── */}
       {showAddModal && (
         <div style={{ position:"fixed", inset:0, background:"#000000cc", display:"flex", alignItems:"center", justifyContent:"center", zIndex:100, padding:16 }}>
-          <div style={{ background:"#1a1a2e", borderRadius:14, padding:isMobile?20:28, width:460, maxWidth:"100%", border:"1px solid #2a2a3e", boxShadow:"0 20px 60px #000000aa" }}>
+          <div style={{ background:"#1a1a2e", borderRadius:14, padding:isMobile?20:28, width:480, maxWidth:"100%", border:"1px solid #2a2a3e", boxShadow:"0 20px 60px #000000aa" }}>
             <h3 style={{ margin:"0 0 20px", fontSize:16, color:currentArea.color }}>+ Nueva tarea — {currentArea.label}</h3>
             <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
               <Field label="Tarea *">
-                <input value={newTask.task} onChange={e=>setNewTask(p=>({...p,task:e.target.value}))} placeholder="Describe la tarea..." style={{ ...inputStyle, width:"100%", boxSizing:"border-box" }} />
+                <input value={newTask.task} onChange={e=>setNewTask(p=>({...p,task:e.target.value}))} placeholder="Describe la tarea..." style={{ ...inputStyle }} />
               </Field>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
                 <Field label="Prioridad">
                   <select value={newTask.priority} onChange={e=>setNewTask(p=>({...p,priority:e.target.value}))} style={{ ...selectStyle, width:"100%" }}>
                     {PRIORITY_OPTIONS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}
                   </select>
                 </Field>
+                <Field label="Fecha límite">
+                  <input type="date" value={newTask.due_date} onChange={e=>setNewTask(p=>({...p,due_date:e.target.value}))} style={{ ...inputStyle, colorScheme:"dark" }} />
+                </Field>
+              </div>
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
                 <Field label="Tiempo (min)">
-                  <input type="number" min={0} max={120} step={5} value={newTask.time_estimate}
-                    onChange={e=>setNewTask(p=>({...p, time_estimate: clampMin(e.target.value)}))}
-                    placeholder="0–120" style={{ ...inputStyle, width:"100%", boxSizing:"border-box" }} />
+                  <input type="number" min={0} max={120} step={5} value={newTask.time_estimate} onChange={e=>setNewTask(p=>({...p, time_estimate: clampMin(e.target.value)}))} placeholder="0–120" style={{ ...inputStyle }} />
                 </Field>
                 <Field label="Worth (USD)">
-                  <input type="number" min={0} step={1} value={newTask.worth}
-                    onChange={e=>setNewTask(p=>({...p, worth: clampWorth(e.target.value)}))}
-                    placeholder="$" style={{ ...inputStyle, width:"100%", boxSizing:"border-box" }} />
+                  <input type="number" min={0} step={1} value={newTask.worth} onChange={e=>setNewTask(p=>({...p, worth: clampWorth(e.target.value)}))} placeholder="$" style={{ ...inputStyle }} />
                 </Field>
               </div>
               <Field label="Next Step">
-                <input value={newTask.next_step} onChange={e=>setNewTask(p=>({...p,next_step:e.target.value}))} placeholder="¿Cuál es el primer paso?" style={{ ...inputStyle, width:"100%", boxSizing:"border-box" }} />
+                <input value={newTask.next_step} onChange={e=>setNewTask(p=>({...p,next_step:e.target.value}))} placeholder="¿Cuál es el primer paso?" style={{ ...inputStyle }} />
               </Field>
+              <label style={{ display:"flex", alignItems:"center", gap:8, fontSize:13, color:"#c9a24a", cursor:"pointer", userSelect:"none" }}>
+                <input type="checkbox" checked={newTask.focus_today} onChange={e=>setNewTask(p=>({...p,focus_today:e.target.checked}))} />
+                ⭐ Marcar para hoy
+              </label>
             </div>
             <div style={{ display:"flex", gap:8, marginTop:20, justifyContent:"flex-end" }}>
               <button onClick={()=>setShowAddModal(false)} style={{ padding:"8px 16px", borderRadius:7, border:"1px solid #2a2a3e", background:"transparent", color:"#9999b5", cursor:"pointer", fontSize:13 }}>Cancelar</button>
@@ -549,9 +623,11 @@ const parseWorth   = t => { if (t?.worth == null || t?.worth === "") return null
 const fmtWorth     = n => "$" + n.toLocaleString("en-US")
 const clampMin     = v => v === "" ? "" : String(Math.min(120, Math.max(0, Math.floor(Number(v) || 0))))
 const clampWorth   = v => v === "" ? "" : String(Math.max(0, Math.floor(Number(v) || 0)))
+const todayISO     = () => { const d = new Date(); const z = n => String(n).padStart(2,"0"); return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())}` }
+const fmtDate      = iso => { const [y,m,dd] = iso.split("-").map(Number); return new Date(y, m-1, dd).toLocaleDateString("es-CL", { day:"numeric", month:"short" }) }
 
 // ─── Shared styles ────────────────────────────────────────────────────────────
-const gridRow   = { display:"grid", gridTemplateColumns:"40px 1fr 92px 78px 84px 132px 1fr 84px" }
+const gridRow   = { display:"grid", gridTemplateColumns:"34px 1fr 84px 64px 74px 92px 120px 1fr 104px" }
 const cardStyle   = { background:"#1a1a2e", borderRadius:12, border:"1px solid #2a2a3e", padding:14 }
 const selectStyle = { padding:"6px 10px", borderRadius:6, border:"1px solid #2a2a3e", background:"#0f0f13", color:"#e8e8f0", fontSize:12, cursor:"pointer" }
 const inputStyle  = { padding:"6px 10px", borderRadius:6, border:"1px solid #2a2a3e", background:"#0f0f13", color:"#e8e8f0", fontSize:13, width:"100%", boxSizing:"border-box" }
